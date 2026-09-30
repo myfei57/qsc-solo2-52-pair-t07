@@ -27,6 +27,7 @@ def compose_plant_status(
         "tick": now,
         "watermark": dict(watermark),
         "subsystems": dict(subsystems),
+        "trials": subsystems.get("trial", {}),
         "lines": dict(lines),
         "versioned": dict(versioned),
         "thresholds": dict(thresholds),

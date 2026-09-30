@@ -12,6 +12,7 @@ CHUTE = "chute"
 PUMP = "pump"
 SAMPLER = "sampler"
 RECIPE = "recipe"
+TRIAL = "trial"
 MOIST = "moist"
 STORE = "store"
 ALARM = "alarm"
@@ -25,6 +26,7 @@ TOPICS: tuple[str, ...] = (
     PUMP,
     SAMPLER,
     RECIPE,
+    TRIAL,
     MOIST,
     STORE,
     ALARM,
@@ -39,6 +41,7 @@ _ORIGIN_TOPICS = {
     "pump": PUMP,
     "sampler": SAMPLER,
     "recipe": RECIPE,
+    "trial": TRIAL,
     "moist": MOIST,
     "store": STORE,
     "console": STORE,

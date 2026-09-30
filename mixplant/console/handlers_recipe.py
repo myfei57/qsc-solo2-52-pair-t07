@@ -8,8 +8,12 @@ from .response import inject_snapshot
 from .router import Request, Response, Router
 
 COMMANDS = (
-    ("POST", "/api/recipe/publish", "recipe.publish"),
     ("POST", "/api/recipe/select", "recipe.select"),
+    ("POST", "/api/trial/open", "trial.open"),
+    ("POST", "/api/trial/complete", "trial.complete"),
+    ("POST", "/api/trial/receipt", "trial.receipt"),
+    ("POST", "/api/trial/receipts", "trial.receipts"),
+    ("POST", "/api/trial/promote", "trial.promote"),
 )
 
 
@@ -22,6 +26,12 @@ def register(router: Router, runtime: Any, pages: Any) -> None:
         lambda _: Response.html(inject_snapshot(pages.load("recipe"), runtime.controller.recipe_view())),
     )
     router.add("GET", "/api/recipes", lambda _: Response.json(runtime.controller.recipe_view()))
+    router.add("GET", "/api/trials", lambda _: Response.json(runtime.trials.status()))
+    router.add(
+        "GET",
+        "/api/trials/{trial_id}/chain",
+        lambda request: Response.json(runtime.trials.chain(request.params["trial_id"])),
+    )
     for method, path, command in COMMANDS:
         router.add(method, path, _command(runtime, command))
 

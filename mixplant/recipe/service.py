@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..context import SharedContext
-from ..errors import NotFoundError
+from ..errors import NotFoundError, OrderViolationError
 from ..ns.topology import Topology
 from ..service_base import PlantService
 from ..statemachine.machine import SequenceMachine
@@ -51,7 +51,7 @@ class RecipeService(PlantService):
         mix_time_ticks: int | None = None,
         moisture_ref_percent: float | None = None,
     ) -> dict[str, Any]:
-        """Validate and publish a new version of ``name``."""
+        """Validate and record an internal recipe version without trial provenance."""
 
         token = self.context.versions.bump(SUBJECT, tick=self.context.clock.now())
         recipe = Recipe(
@@ -80,6 +80,12 @@ class RecipeService(PlantService):
 
         self.require("recipe.select")
         recipe = self.book.select(name)
+        if recipe.provenance is None:
+            raise OrderViolationError(
+                "production may only select a formal version promoted from an accepted trial",
+                name=name,
+                version=recipe.version,
+            )
         self._mapping = build_mapping(recipe, self.topology)
         self.publish(
             SELECTED_KIND,

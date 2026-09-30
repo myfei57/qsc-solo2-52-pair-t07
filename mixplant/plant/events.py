@@ -7,6 +7,10 @@ from typing import Any, Mapping
 EVENT_NAMES: Mapping[str, str] = {
     "recipe.published": "recipe",
     "recipe.selected": "recipe",
+    "trial.opened": "trial",
+    "trial.completed": "trial",
+    "trial.receipt_attached": "trial",
+    "trial.promoted": "trial",
     "agg.bin_mapped": "agg",
     "agg.weighed": "agg",
     "agg.persisted": "agg",

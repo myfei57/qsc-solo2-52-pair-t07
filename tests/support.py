@@ -21,7 +21,21 @@ def run(runtime: PlantRuntime, command: str, payload: dict[str, Any] | None = No
 
 
 def publish_and_select(runtime: PlantRuntime) -> None:
-    run(runtime, "recipe.publish", dict(RECIPE))
+    opened = run(runtime, "trial.open", dict(RECIPE, prepared_by="preparer-1"))
+    trial_id = opened["trial"]["trial_id"]
+    run(runtime, "trial.complete", {"trial_id": trial_id, "approved_by": "supervisor-1"})
+    run(
+        runtime,
+        "trial.receipt",
+        {
+            "trial_id": trial_id,
+            "passed": True,
+            "report_ref": "lab/acceptance.pdf",
+            "content_hash": "sha256:acceptance",
+            "issued_by": "lab-1",
+        },
+    )
+    run(runtime, "trial.promote", {"trial_id": trial_id, "name": RECIPE["name"], "promoted_by": "manager-1"})
     run(runtime, "recipe.select", {"name": RECIPE["name"]})
 
 

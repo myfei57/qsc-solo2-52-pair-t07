@@ -15,7 +15,7 @@ from .decision.batch import BatchRegistry
 from .decision.query import query_from_params, run_query
 from .decision.stateview import StateView
 from .decision.thresholds import ThresholdSet
-from .errors import NotFoundError
+from .errors import NotFoundError, ValidationError
 from .event.bus import Event, EventBus
 from .event.subscribers import AlarmCollector, AuditSubscriber
 from .event.topics import ALARM, STORE
@@ -29,7 +29,15 @@ from .ns.registry import DeviceKind
 from .ns.topology import build_registry, default_topology
 from .plant.controller import PlantController
 from .plant.status import compose_plant_status
-from .plant.tools import integer, number, optional_integer, optional_number, optional_text, text
+from .plant.tools import (
+    integer,
+    number,
+    optional_bool,
+    optional_integer,
+    optional_number,
+    optional_text,
+    text,
+)
 from .pump.service import PumpService
 from .recipe.recipe import Recipe
 from .recipe.service import RecipeService
@@ -39,6 +47,13 @@ from .statemachine.gate import PreGate
 from .statemachine.machine import SequenceMachine
 from .statemachine.phases import LINE_SEQUENCES
 from .store.repository import RecordRepository, RestoreReport
+from .trial.service import (
+    TRIAL_COMPLETED_KIND,
+    TRIAL_OPENED_KIND,
+    TRIAL_PROMOTED_KIND,
+    TRIAL_RECEIPT_KIND,
+    TrialService,
+)
 from .versioning.expiry import Validity
 from .versioning.facade import VersionedArtifacts
 from .water.service import WaterService
@@ -110,6 +125,7 @@ class PlantRuntime:
         self.pump = PumpService(self.context, self.machines["delivery"])
         self.sampler = SamplerService(self.context, self.recipes, self.machines["delivery"])
         self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
+        self.trials = TrialService(self.context, self.recipes, self.machines["batch"], audit=self.audit)
         self.controller = PlantController(self)
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
@@ -122,6 +138,7 @@ class PlantRuntime:
             "chute": self.chute,
             "pump": self.pump,
             "sampler": self.sampler,
+            "trial": self.trials,
             "audit": self.audit,
         }
         self._wire_bus()
@@ -175,6 +192,17 @@ class PlantRuntime:
         self.ids.restore("snap", len(self.store.snapshots.load_all()))
         samples = sum(1 for record in self.store.visible() if record.kind == "sampler.record")
         self.ids.restore("sample", samples)
+        trial_count = sum(
+            1
+            for record in self.store.visible()
+            if record.kind == TRIAL_OPENED_KIND
+            and "-r" not in str(record.payload.get("trial_id", ""))
+        )
+        self.ids.restore("trial", trial_count)
+        self.ids.restore(
+            "receipt",
+            sum(1 for record in self.store.visible() if record.kind == TRIAL_RECEIPT_KIND),
+        )
 
     def _adopt_records(self) -> None:
         """Adopt everything the stream still carries."""
@@ -228,6 +256,14 @@ class PlantRuntime:
                     1,
                     validity=Validity.never(record.tick),
                 )
+            elif record.kind in {
+                TRIAL_OPENED_KIND,
+                TRIAL_COMPLETED_KIND,
+                TRIAL_RECEIPT_KIND,
+                TRIAL_PROMOTED_KIND,
+                "trial.retried",
+            }:
+                self.trials.adopt(record)
         self.moist.sync(corrections)
 
     def _hydrate_machines(self) -> None:
@@ -380,18 +416,36 @@ class PlantRuntime:
         """Return the command surface the console exposes."""
 
         return {
-            "recipe.publish": lambda payload: self.recipes.publish_recipe(
-                name=text(payload, "name"),
-                grade_code=text(payload, "grade"),
+            "recipe.select": lambda payload: self.recipes.select(text(payload, "name")),
+            "trial.open": lambda payload: self.trials.open_trial(
+                name=optional_text(payload, "name", "") or None,
+                grade_code=optional_text(payload, "grade", "") or None,
                 factors=self._factors(payload),
-                mix_time_ticks=optional_integer(
-                    payload, "mix_time_ticks", self.config.limits.mix_time_ticks
-                ),
+                prepared_by=text(payload, "prepared_by"),
+                mix_time_ticks=optional_integer(payload, "mix_time_ticks", self.config.limits.mix_time_ticks),
                 moisture_ref_percent=optional_number(
                     payload, "moisture_ref_percent", self.config.limits.moisture_max_percent / 2.0
                 ),
+                retry_of=optional_text(payload, "retry_of", "") or None,
             ),
-            "recipe.select": lambda payload: self.recipes.select(text(payload, "name")),
+            "trial.complete": lambda payload: self.trials.complete_trial(
+                trial_id=text(payload, "trial_id"),
+                approved_by=text(payload, "approved_by"),
+            ),
+            "trial.receipt": lambda payload: self.trials.attach_receipt(
+                trial_id=text(payload, "trial_id"),
+                passed=optional_bool(payload, "passed", False),
+                report_ref=text(payload, "report_ref"),
+                content_hash=text(payload, "content_hash"),
+                issued_by=text(payload, "issued_by"),
+            ),
+            "trial.receipts": lambda payload: self.trials.attach_receipts(self._receipts(payload)),
+            "trial.promote": lambda payload: self.trials.promote_trial(
+                trial_id=text(payload, "trial_id"),
+                name=optional_text(payload, "name", "") or None,
+                promoted_by=text(payload, "promoted_by"),
+            ),
+            "trial.chain": lambda payload: self.trials.chain(text(payload, "trial_id")),
             "batch.declare": lambda payload: self.agg.declare_batch(
                 batch_id=text(payload, "batch_id"), quantity=number(payload, "quantity")
             ),
@@ -523,6 +577,13 @@ class PlantRuntime:
             if value not in (None, ""):
                 factors[material] = float(value)
         return factors
+
+    @staticmethod
+    def _receipts(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        raw = payload.get("receipts")
+        if not isinstance(raw, list):
+            raise ValidationError("batch receipt command needs a receipts list")
+        return [item for item in raw if isinstance(item, Mapping)]
 
     @staticmethod
     def _detail(payload: Mapping[str, Any]) -> dict[str, Any]:

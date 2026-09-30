@@ -85,6 +85,7 @@ class RecipeBook:
                 "selected": name == self._selected,
                 "versions": [recipe.version for recipe in self._versions[name]],
                 "current": self._versions[name][-1].describe(),
+                "history": [recipe.describe() for recipe in self._versions[name]],
             }
             for name in self.names()
         ]

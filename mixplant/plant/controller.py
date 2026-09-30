@@ -21,7 +21,7 @@ class PlantController:
         self.runtime = runtime
 
     def recipe_view(self) -> dict[str, Any]:
-        return recipe_view(self.runtime.recipes)
+        return recipe_view(self.runtime.recipes, self.runtime.trials)
 
     def batch_view(self) -> dict[str, Any]:
         return batch_view(

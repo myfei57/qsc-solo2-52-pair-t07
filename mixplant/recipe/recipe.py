@@ -20,6 +20,7 @@ class Recipe:
     factors: Mapping[str, float]
     mix_time_ticks: int
     moisture_ref_percent: float
+    provenance: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -40,6 +41,8 @@ class Recipe:
         if not 0.0 <= self.moisture_ref_percent <= 100.0:
             raise ValidationError("recipe moisture reference must be a percentage", name=self.name)
         object.__setattr__(self, "factors", MappingProxyType(dict(self.factors)))
+        if self.provenance is not None:
+            object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
 
     @property
     def materials(self) -> tuple[str, ...]:
@@ -61,6 +64,7 @@ class Recipe:
             "factors": dict(self.factors),
             "mix_time_ticks": self.mix_time_ticks,
             "moisture_ref_percent": self.moisture_ref_percent,
+            "provenance": None if self.provenance is None else dict(self.provenance),
         }
 
     def to_document(self) -> dict[str, Any]:
@@ -79,4 +83,7 @@ class Recipe:
             factors={str(material): float(value) for material, value in dict(document["factors"]).items()},
             mix_time_ticks=int(document["mix_time_ticks"]),
             moisture_ref_percent=float(document["moisture_ref_percent"]),
+            provenance=None
+            if document.get("provenance") is None
+            else dict(document["provenance"]),
         )

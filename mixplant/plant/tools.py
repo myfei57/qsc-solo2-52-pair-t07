@@ -58,7 +58,6 @@ def integer(payload: Mapping[str, Any], key: str) -> int:
     except (TypeError, ValueError) as exc:
         raise ValidationError("command field must be an integer", field=key, value=str(value)) from exc
 
-
 def optional_integer(payload: Mapping[str, Any], key: str, fallback: int) -> int:
     value = payload.get(key)
     if value is None or value == "":
@@ -67,3 +66,17 @@ def optional_integer(payload: Mapping[str, Any], key: str, fallback: int) -> int
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValidationError("command field must be an integer", field=key, value=str(value)) from exc
+
+
+def optional_bool(payload: Mapping[str, Any], key: str, fallback: bool) -> bool:
+    value = payload.get(key)
+    if value is None or value == "":
+        return fallback
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes", "y"}:
+        return True
+    if normalized in {"false", "0", "no", "n"}:
+        return False
+    raise ValidationError("command field must be a boolean", field=key, value=str(value))
