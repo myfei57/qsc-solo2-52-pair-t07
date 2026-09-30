@@ -9,6 +9,7 @@ from .diagnostics import run_diagnostics
 from .manifest import describe_manifest
 from .mix import mix_view
 from .recipe import recipe_view
+from .trial import provenance, trial_view
 from .truck import truck_view
 
 
@@ -21,7 +22,15 @@ class PlantController:
         self.runtime = runtime
 
     def recipe_view(self) -> dict[str, Any]:
-        return recipe_view(self.runtime.recipes)
+        view = recipe_view(self.runtime.recipes)
+        view["trials"] = trial_view(self.runtime.trials)
+        return view
+
+    def trial_view(self) -> dict[str, Any]:
+        return trial_view(self.runtime.trials)
+
+    def trial_provenance(self, name: str, version: int) -> dict[str, Any]:
+        return provenance(self.runtime.trials, name, version)
 
     def batch_view(self) -> dict[str, Any]:
         return batch_view(

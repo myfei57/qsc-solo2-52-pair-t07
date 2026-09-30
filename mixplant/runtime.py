@@ -15,7 +15,7 @@ from .decision.batch import BatchRegistry
 from .decision.query import query_from_params, run_query
 from .decision.stateview import StateView
 from .decision.thresholds import ThresholdSet
-from .errors import NotFoundError
+from .errors import NotFoundError, ValidationError, ValidationError
 from .event.bus import Event, EventBus
 from .event.subscribers import AlarmCollector, AuditSubscriber
 from .event.topics import ALARM, STORE
@@ -39,6 +39,10 @@ from .statemachine.gate import PreGate
 from .statemachine.machine import SequenceMachine
 from .statemachine.phases import LINE_SEQUENCES
 from .store.repository import RecordRepository, RestoreReport
+from .trial.service import DECLARED_KIND as TRIAL_DECLARED_KIND
+from .trial.service import PROMOTED_KIND as TRIAL_PROMOTED_KIND
+from .trial.service import RECEIPT_KIND as TRIAL_RECEIPT_KIND
+from .trial.service import TrialService
 from .versioning.expiry import Validity
 from .versioning.facade import VersionedArtifacts
 from .water.service import WaterService
@@ -53,6 +57,9 @@ LATCH_KIND = "sampler.latch"
 COMP_KIND = "moist.comp"
 SELECTED_KIND = "recipe.selected"
 PUBLISHED_KIND = "recipe.published"
+TRIAL_DECLARED_KIND = "trial.declared"
+TRIAL_RECEIPT_KIND = "trial.receipt"
+TRIAL_PROMOTED_KIND = "trial.promoted"
 
 LINES: tuple[str, ...] = tuple(LINE_SEQUENCES)
 EXTRA_DEVICES = (
@@ -101,6 +108,7 @@ class PlantRuntime:
             ids=self.ids,
         )
         self.recipes = RecipeService(self.context, self.topology, self.machines["batch"])
+        self.trials = TrialService(self.context, self.recipes)
         self.agg = AggService(self.context, self.recipes, self.machines["batch"])
         self.moist = MoistService(self.context, self.recipes.book, default_table(), self.machines["batch"])
         self.cement = CementService(self.context, self.machines["mix"])
@@ -114,6 +122,7 @@ class PlantRuntime:
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
             "recipe": self.recipes,
+            "trial": self.trials,
             "agg": self.agg,
             "moist": self.moist,
             "cement": self.cement,
@@ -175,6 +184,10 @@ class PlantRuntime:
         self.ids.restore("snap", len(self.store.snapshots.load_all()))
         samples = sum(1 for record in self.store.visible() if record.kind == "sampler.record")
         self.ids.restore("sample", samples)
+        trials = sum(1 for record in self.store.visible() if record.kind == TRIAL_DECLARED_KIND)
+        self.ids.restore("trial", trials)
+        receipts = sum(1 for record in self.store.visible() if record.kind == TRIAL_RECEIPT_KIND)
+        self.ids.restore("receipt", receipts)
 
     def _adopt_records(self) -> None:
         """Adopt everything the stream still carries."""
@@ -186,6 +199,12 @@ class PlantRuntime:
                 self.recipes.adopt(recipe, selected=False)
             elif record.kind == SELECTED_KIND:
                 self.recipes.adopt(self.recipes.book.current(str(record.payload["name"])), selected=True)
+            elif record.kind == TRIAL_DECLARED_KIND:
+                self.trials.adopt_declared(record.payload)
+            elif record.kind == TRIAL_RECEIPT_KIND:
+                self.trials.adopt_receipt(record.payload)
+            elif record.kind == TRIAL_PROMOTED_KIND:
+                self.trials.adopt_promoted(record.payload)
             elif record.kind == BATCH_KIND:
                 from .decision.batch import Batch
 
@@ -332,13 +351,13 @@ class PlantRuntime:
         )
         return {"baseline": baseline.describe(self.clock.now()), "seq": record.seq}
 
-    def confirm(self, subject: str, *, ttl_ticks: int | None = None) -> dict[str, Any]:
+    def confirm(self, subject: str, *, ttl_ticks: int | None = None, issuer: str = "console") -> dict[str, Any]:
         """Record a fresh confirmation for ``subject``."""
 
         ttl = self.config.defaults.confirmation_ttl_ticks if ttl_ticks is None else ttl_ticks
         confirmation = self.versions.confirm(
             subject,
-            issuer="console",
+            issuer=issuer,
             tick=self.clock.now(),
             ttl_ticks=ttl,
         )
@@ -392,6 +411,14 @@ class PlantRuntime:
                 ),
             ),
             "recipe.select": lambda payload: self.recipes.select(text(payload, "name")),
+            "trial.declare": lambda payload: self._declare_trial(payload),
+            "trial.receipt": lambda payload: self._attach_receipt(payload),
+            "trial.confirm": lambda payload: self.confirm(
+                f"trial:{text(payload, 'trial_id')}",
+                ttl_ticks=optional_integer(payload, "ttl_ticks", self.config.defaults.confirmation_ttl_ticks),
+                issuer=optional_text(payload, "operator", "console"),
+            ),
+            "trial.promote": lambda payload: self._promote_trial(text(payload, "trial_id")),
             "batch.declare": lambda payload: self.agg.declare_batch(
                 batch_id=text(payload, "batch_id"), quantity=number(payload, "quantity")
             ),
@@ -509,6 +536,84 @@ class PlantRuntime:
             sample_id=str(result["sample"]["sample_id"]),
         )
         return result
+
+    def _declare_trial(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Declare a trial pan and copy the declaration into the ledger."""
+
+        result = self.trials.declare_trial(
+            name=text(payload, "name"),
+            grade_code=text(payload, "grade"),
+            factors=self._factors(payload),
+            mix_time_ticks=optional_integer(payload, "mix_time_ticks", self.config.limits.mix_time_ticks),
+            moisture_ref_percent=optional_number(
+                payload, "moisture_ref_percent", self.config.limits.moisture_max_percent / 2.0
+            ),
+            declared_by=optional_text(payload, "operator", "console"),
+        )
+        trial = result["trial"]
+        self.audit.note(
+            "trial.declared",
+            {
+                "trial_id": trial["trial_id"],
+                "name": trial["name"],
+                "grade_code": trial["grade_code"],
+                "declared_by": trial["declared_by"],
+            },
+        )
+        return result
+
+    def _attach_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Hang the laboratory receipt on its pan and copy it into the ledger."""
+
+        result = self.trials.attach_receipt(
+            trial_id=text(payload, "trial_id"),
+            verdict=text(payload, "verdict"),
+            issued_by=text(payload, "issued_by"),
+            strength_mpa=self._optional_measure(payload, "strength_mpa"),
+            slump_mm=self._optional_measure(payload, "slump_mm"),
+        )
+        receipt = result["receipt"]
+        detail = {
+            "trial_id": receipt["trial_id"],
+            "receipt_id": receipt["receipt_id"],
+            "verdict": receipt["verdict"],
+            "issued_by": receipt["issued_by"],
+            "late": receipt["late"],
+        }
+        if result["disposition"] is not None:
+            detail.update(result["disposition"])
+        self.audit.note("trial.receipt", detail)
+        return result
+
+    def _promote_trial(self, trial_id: str) -> dict[str, Any]:
+        """Migrate one confirmed pan into the book and copy it into the ledger."""
+
+        result = self.trials.promote(trial_id)
+        promotion = result["trial"]["promotion"] or {}
+        self.audit.note(
+            "trial.promoted",
+            {
+                "trial_id": trial_id,
+                "name": promotion.get("name"),
+                "version": promotion.get("version"),
+                "receipt_id": promotion.get("receipt_id"),
+                "confirmation_id": promotion.get("confirmation_id"),
+                "issuer": promotion.get("issuer"),
+            },
+        )
+        return result
+
+    @staticmethod
+    def _optional_measure(payload: Mapping[str, Any], key: str) -> float | None:
+        """Read an optional numeric measurement out of a command body."""
+
+        value = payload.get(key)
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("command field must be a number", field=key, value=str(value)) from exc
 
     @staticmethod
     def _factors(payload: Mapping[str, Any]) -> dict[str, float]:

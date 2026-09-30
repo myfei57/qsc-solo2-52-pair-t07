@@ -5,11 +5,16 @@
   <title>Recipe book</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f6f8; color: #1c1f24; }
-    table { border-collapse: collapse; width: 100%; background: #fff; }
+    table { border-collapse: collapse; width: 100%; background: #fff; margin-bottom: 1.5rem; }
     th, td { border: 1px solid #d7dbe0; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
     form { background: #fff; padding: 1rem; border: 1px solid #d7dbe0; margin-bottom: 1rem; }
-    input, button { padding: 0.35rem 0.5rem; margin: 0.2rem; }
+    input, button, select { padding: 0.35rem 0.5rem; margin: 0.2rem; }
     nav a { margin-right: 0.8rem; }
+    h2 { margin-top: 2rem; }
+    .status-promoted { color: #146c2e; font-weight: 600; }
+    .status-returned { color: #9f1d1d; font-weight: 600; }
+    .status-suspended { color: #8a5a00; font-weight: 600; }
+    .late { color: #9f1d1d; }
   </style>
 </head>
 <body>
@@ -30,14 +35,68 @@
     <button type="submit">select</button>
   </form>
   <table id="recipes"><thead><tr><th>name</th><th>grade</th><th>version</th><th>selected</th></tr></thead><tbody></tbody></table>
+
+  <h2>Trial pans (试配)</h2>
+  <p id="policy"></p>
+  <form id="declare">
+    <input name="name" placeholder="recipe name" value="mix-b">
+    <input name="grade" placeholder="grade" value="C30">
+    <input name="sand" placeholder="sand kg/m3" value="760">
+    <input name="gravel" placeholder="gravel kg/m3" value="1010">
+    <input name="cement" placeholder="cement kg/m3" value="330">
+    <input name="water" placeholder="water L/m3" value="175">
+    <input name="moisture_ref_percent" placeholder="moisture %" value="4.5">
+    <input name="operator" placeholder="declared by" value="console">
+    <button type="submit">declare trial</button>
+  </form>
+  <form id="receipt">
+    <input name="trial_id" placeholder="trial id" value="trial-000001">
+    <select name="verdict"><option value="qualified">qualified</option><option value="unqualified">unqualified</option></select>
+    <input name="issued_by" placeholder="lab issuer" value="lab-1">
+    <input name="strength_mpa" placeholder="strength MPa">
+    <input name="slump_mm" placeholder="slump mm">
+    <button type="submit">file receipt</button>
+  </form>
+  <form id="promote">
+    <input name="trial_id" placeholder="trial id" value="trial-000001">
+    <input name="operator" placeholder="confirmed by" value="console">
+    <button type="submit">confirm &amp; promote</button>
+  </form>
+  <table id="trials"><thead><tr><th>trial</th><th>name</th><th>grade</th><th>status</th><th>disposition</th><th>receipts</th><th>promoted to</th></tr></thead><tbody></tbody></table>
+
+  <h2>Promotions (试配 → 正式)</h2>
+  <table id="promotions"><thead><tr><th>recipe</th><th>version</th><th>from trial</th><th>receipt</th><th>confirmed by</th></tr></thead><tbody></tbody></table>
+
   <script id="plant-state" type="application/json"><!--STATE--></script>
   <script>
-    const state = JSON.parse(document.getElementById('plant-state').textContent || '{"book":{"recipes":[]}}');
+    const state = JSON.parse(document.getElementById('plant-state').textContent || '{"book":{"recipes":[]},"trials":{"trials":[],"promotions":[],"policy":{}}}');
     const body = document.querySelector('#recipes tbody');
     for (const entry of state.book.recipes) {
       const row = document.createElement('tr');
       row.innerHTML = `<td>${entry.name}</td><td>${entry.current.grade.code}</td><td>${entry.current.version}</td><td>${entry.selected}</td>`;
       body.appendChild(row);
+    }
+    const trials = state.trials || { trials: [], promotions: [], policy: {} };
+    const policy = trials.policy || {};
+    document.getElementById('policy').textContent =
+      'unqualified receipt policy by grade: ' + Object.entries(policy).map(([grade, rule]) => `${grade} → ${rule}`).join(', ');
+    const trialBody = document.querySelector('#trials tbody');
+    for (const trial of trials.trials) {
+      const receipts = trial.receipts.map((receipt) =>
+        `${receipt.verdict}${receipt.late ? ' (late)' : ''} by ${receipt.issued_by}`).join('; ');
+      const promoted = trial.promotion ? `${trial.promotion.name} v${trial.promotion.version}` : '';
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${trial.trial_id}</td><td>${trial.name}</td><td>${trial.grade_code}</td>` +
+        `<td class="status-${trial.status}">${trial.status}</td><td>${trial.disposition || ''}</td>` +
+        `<td>${receipts}</td><td>${promoted}</td>`;
+      trialBody.appendChild(row);
+    }
+    const promotionBody = document.querySelector('#promotions tbody');
+    for (const promotion of trials.promotions) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${promotion.name}</td><td>${promotion.version}</td><td>${promotion.trial_id}</td>` +
+        `<td>${promotion.receipt_id}</td><td>${promotion.issuer}</td>`;
+      promotionBody.appendChild(row);
     }
     async function post(path, form) {
       const payload = Object.fromEntries(new FormData(form).entries());
@@ -46,6 +105,15 @@
     }
     document.getElementById('publish').addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post('/api/recipe/publish', event.target)); location.reload(); });
     document.getElementById('select').addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post('/api/recipe/select', event.target)); location.reload(); });
+    document.getElementById('declare').addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post('/api/trial/declare', event.target)); location.reload(); });
+    document.getElementById('receipt').addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post('/api/trial/receipt', event.target)); location.reload(); });
+    document.getElementById('promote').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const payload = Object.fromEntries(new FormData(event.target).entries());
+      console.log(await post('/api/trial/confirm', event.target));
+      console.log(await post('/api/trial/promote', event.target));
+      location.reload();
+    });
   </script>
 </body>
 </html>

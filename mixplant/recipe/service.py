@@ -50,8 +50,14 @@ class RecipeService(PlantService):
         factors: Mapping[str, float],
         mix_time_ticks: int | None = None,
         moisture_ref_percent: float | None = None,
+        source: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Validate and publish a new version of ``name``."""
+        """Validate and publish a new version of ``name``.
+
+        ``source`` records where the version migrated from — for a promoted
+        trial pan the trial, receipt and confirmation identities — so the
+        formal version stays traceable to the trial it came from.
+        """
 
         token = self.context.versions.bump(SUBJECT, tick=self.context.clock.now())
         recipe = Recipe(
@@ -70,7 +76,10 @@ class RecipeService(PlantService):
         )
         require_valid(validate_recipe(recipe, self.context.config.limits))
         self.book.publish(recipe)
-        self.publish(PUBLISHED_KIND, {"active": True, **recipe.describe()})
+        body: dict[str, Any] = {"active": True, **recipe.describe()}
+        if source is not None:
+            body["source"] = {str(key): str(value) for key, value in source.items()}
+        self.publish(PUBLISHED_KIND, body)
         self.publish(VERSION_KIND, {"active": True, "name": recipe.name, "version": recipe.version})
         self.emit("recipe.published", {"name": recipe.name, "version": recipe.version})
         return {"recipe": recipe.describe(), "generation": token.describe()}
